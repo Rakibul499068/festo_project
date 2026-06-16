@@ -1,73 +1,101 @@
-cat << 'EOF' > setup_it_smart_switch.sh
+cat << 'EOF' > /home/student/setup_it_smart_switch.sh
 #!/bin/bash
 # =====================================================================
-# UNIFIED SMART SWITCH DEPLOYMENT SCRIPT (IT-SWITCH)
+# IT-SWITCH DEPLOYMENT SCRIPT
+# Run this to deploy or redeploy the IT-Switch configuration
+# Usage: sudo ./setup_it_smart_switch.sh
 # =====================================================================
 
-echo "=== Step 1: Creating Initialization Script ==="
-mkdir -p /usr/local/bin
+BRIDGE="br-it"
+PORTS="ens3 ens4 ens5 ens6 ens7 ens8 ens9 ens10 ens11"
+INIT_SCRIPT="/home/student/it_switch_init.sh"
+SERVICE_FILE="/etc/systemd/system/it-switch.service"
 
-cat << 'INNER' > /usr/local/bin/it_switch_init.sh
+echo "=== Step 1: Creating Init Script ==="
+cat << 'INNER' > $INIT_SCRIPT
 #!/bin/bash
-echo "=== Triggering Smart Switch Engine ==="
 
-# Tear down old structural states
-ip link set dev br-it down 2>/dev/null
-ovs-vsctl del-br br-it 2>/dev/null
+BRIDGE="br-it"
+PORTS="ens3 ens4 ens5 ens6 ens7 ens8 ens9 ens10 ens11"
 
-# Build modern Open vSwitch L2 Bridge
-ovs-vsctl add-br br-it
+reset_switch() {
+    echo "=== Resetting IT-Switch ==="
+    ip link set dev $BRIDGE down 2>/dev/null
+    ovs-vsctl del-br $BRIDGE 2>/dev/null
+    for port in $PORTS; do
+        ip addr flush dev $port 2>/dev/null
+        ip link set dev $port down 2>/dev/null
+    done
+    echo "=== Reset complete ==="
+}
 
-# Bind target ports (eth0, eth1, eth2) seamlessly to the L2 forwarding plane
-for port in eth0 eth1 eth2; do
-    echo "Staging interface link: $port"
-    ip addr flush dev $port 2>/dev/null
-    ip link set dev $port up
-    ovs-vsctl add-port br-it $port 2>/dev/null
-done
+setup_switch() {
+    echo "=== Setting up IT-Switch ==="
 
-# Bring up virtual software interface bridge
-ip link set dev br-it up
+    # Clean slate
+    reset_switch
 
-# Assign switch control-plane interface management IP
-ip addr flush dev br-it 2>/dev/null
-ip addr add 10.10.1.1/24 dev br-it
+    # Create fresh OVS bridge
+    ovs-vsctl add-br $BRIDGE
 
-# Ensure kernel tracking allows clear frame transition
-sysctl -w net.ipv4.ip_forward=1
+    # Add all ports
+    for port in $PORTS; do
+        echo "Adding port: $port"
+        ip addr flush dev $port 2>/dev/null
+        ip link set dev $port up
+        ovs-vsctl add-port $BRIDGE $port 2>/dev/null
+    done
+
+    # Bring up bridge with NO IP (pure L2)
+    ip link set dev $BRIDGE up
+
+    echo "=== IT-Switch ready ==="
+    ovs-vsctl show
+}
+
+case "$1" in
+    reset)  reset_switch ;;
+    *)      setup_switch ;;
+esac
 INNER
 
-# Make the internal script executable
-chmod +x /usr/local/bin/it_switch_init.sh
+chmod +x $INIT_SCRIPT
+echo "Init script created at $INIT_SCRIPT"
 
-
-echo "=== Step 2: Creating Systemd Boot Service ==="
-cat << 'INNER' > /etc/systemd/system/it-switch.service
+echo "=== Step 2: Creating Systemd Service ==="
+cat << 'INNER' > $SERVICE_FILE
 [Unit]
-Description=IT-Switch Smart Layer 2 Bridging Daemon Setup
+Description=IT-Switch Layer 2 Bridging Daemon
 After=openvswitch-switch.service network-online.target
 Wants=openvswitch-switch.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/it_switch_init.sh
+ExecStart=/home/student/it_switch_init.sh
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 INNER
 
+echo "Service file created at $SERVICE_FILE"
 
-echo "=== Step 3: Activating & Running Architecture ==="
+echo "=== Step 3: Enabling & Starting Service ==="
 systemctl daemon-reload
 systemctl enable it-switch.service
 systemctl restart it-switch.service
 
+echo ""
 echo "====================================================================="
-echo "=== SUCCESS: IT-Switch is running transparently as a Smart Switch! ==="
+echo "SUCCESS: IT-Switch deployed!"
+echo ""
+echo "Useful commands:"
+echo "  Check status:  ovs-vsctl show"
+echo "  Reset switch:  /home/student/it_switch_init.sh reset"
+echo "  Re-setup:      /home/student/it_switch_init.sh"
+echo "  Restart svc:   systemctl restart it-switch.service"
 echo "====================================================================="
 EOF
 
-# Run the master deployment file
-chmod +x setup_it_smart_switch.sh
-sudo ./setup_it_smart_switch.sh
+chmod +x /home/student/setup_it_smart_switch.sh
+sudo /home/student/setup_it_smart_switch.sh
