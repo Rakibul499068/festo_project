@@ -8,7 +8,7 @@ rm -f /etc/systemd/system/core.service
 rm -f /usr/local/bin/core.sh
 systemctl daemon-reload
 
-# 1. Create the smart, dynamic startup script
+# 1. Create the explicit Core mapping script
 cat << 'INNER' > /usr/local/bin/core.sh
 #!/bin/bash
 sleep 2
@@ -17,38 +17,22 @@ echo "=== Setting up Core Switch ==="
 ovs-vsctl del-br br-core 2>/dev/null
 ovs-vsctl add-br br-core
 
-# Automatically discover all real interfaces (ignoring loops, bridges, and ovs internals)
-interfaces=$(ip -br link show | awk '{print $1}' | grep -E '^(ens|eth)' | sort)
+# 1. Bring up your Firewall Uplink on ens3
+ip addr flush dev ens3 2>/dev/null
+ip addr add 192.168.100.2/24 dev ens3
+ip link set dev ens3 up
 
-# Convert list to an array
-iface_array=($interfaces)
-
-# The very first discovered interface is assumed to be your uplink (eth0 or ens3)
-uplink=${iface_array[0]}
-
-echo "Found uplink interface: $uplink"
-ip addr flush dev $uplink 2>/dev/null
-ip addr add 192.168.100.2/30 dev $uplink
-ip link set dev $uplink up
-
-# Map the remaining station ports dynamically to their VLAN tags
-# index 1 -> tag 10, index 2 -> tag 11, etc.
-vlan_tags=(10 11 12 20 21 30)
-tag_index=0
-
-for ((i=1; i<${#iface_array[@]}; i++)); do
-    port=${iface_array[$i]}
-    tag=${vlan_tags[$tag_index]}
-    
-    # If we run out of defined VLAN tags, break out
-    if [ -z "$tag" ]; then break; fi
-    
-    ip link set dev $port up 2>/dev/null
-    ovs-vsctl add-port br-core $port tag=$tag 2>/dev/null
-    echo "Attached physical port $port to VLAN $tag"
-    
-    ((tag_index++))
+# 2. Force all active signaling ports UP
+for i in {4..7}; do
+    ip link set dev ens$i up 2>/dev/null
 done
+
+# 3. Explicitly map your ports to specific VLAN tags
+# If your pings fail after this, we just need to swap these tag numbers below!
+ovs-vsctl add-port br-core ens4 tag=10 2>/dev/null
+ovs-vsctl add-port br-core ens5 tag=11 2>/dev/null
+ovs-vsctl add-port br-core ens6 tag=12 2>/dev/null
+ovs-vsctl add-port br-core ens7 tag=20 2>/dev/null
 
 echo "=== Creating Virtual Routing Gateways ==="
 for tag in 10 11 12 20 21 30; do
@@ -63,7 +47,7 @@ ip link set dev br-core up
 
 # Routes and IP Forwarding
 ip route del default 2>/dev/null
-ip route add default via 192.168.100.1 dev $uplink
+ip route add default via 192.168.100.1 dev ens3
 sysctl -w net.ipv4.ip_forward=1
 INNER
 
@@ -97,7 +81,7 @@ if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
 fi
 sysctl -p
 
-echo "=== DONE: Core setup is clean and permanent via core.service! ==="
+echo "=== DONE: Explicit Core setup applied via core.service! ==="
 EOF
 
 chmod +x setup_core.sh
