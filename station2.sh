@@ -1,52 +1,81 @@
 #!/bin/bash
+# =====================================================================
+# STATION-2 SWITCH DEPLOYMENT SCRIPT
+# e0(ens3) → OT-Core, e1(ens4) → PLC-2, e2(ens5) → HMI-2
+# Usage: sudo ./setup_station2_switch.sh
+# =====================================================================
 
-# 1. Write the dynamic background startup routine
-cat << 'INNER' > /usr/local/bin/ovs-switch2-startup.sh
-#!/bin/bash
-sleep 2
+BRIDGE="br-station2"
+PORTS="ens3 ens4 ens5 ens6 ens7 ens8 ens9 ens10 ens11"
 
-echo "=== Cleaning and Rebuilding Switch 2 Bridge ==="
-ovs-vsctl del-br br-st2 2>/dev/null
-ovs-vsctl add-br br-st2
+reset() {
+    echo "=== Resetting Station-2-Switch ==="
+    ip link set dev $BRIDGE down 2>/dev/null
+    ovs-vsctl del-br $BRIDGE 2>/dev/null
+    for port in $PORTS; do
+        ip addr flush dev $port 2>/dev/null
+        ip link set dev $port down 2>/dev/null
+    done
+    echo "=== Reset complete ==="
+}
 
-# Automatically discover ANY network interface that starts with 'ens'
-interfaces=$(ip -br link show | awk '{print $1}' | grep '^ens')
+setup() {
+    echo "=== Setting up Station-2-Switch ==="
+    reset
 
-for port in $interfaces; do
-    # Wake up the port
-    ip link set dev $port up 2>/dev/null
-    
-    # Add it to the bridge
-    ovs-vsctl add-port br-st2 $port 2>/dev/null
-    echo "Successfully attached active physical port: $port"
-done
+    echo "=== Step 1: Hostname ==="
+    hostnamectl set-hostname Station-2-Switch
+    sed -i '/Station-2-Switch/d' /etc/hosts
+    echo "127.0.0.1 Station-2-Switch" >> /etc/hosts
 
-ip link set dev br-st2 up
-echo "=== FINISHED: Switch 2 is permanently operational ==="
-INNER
+    echo "=== Step 2: Fix Boot Delay ==="
+    systemctl disable systemd-networkd-wait-online.service
+    systemctl mask systemd-networkd-wait-online.service
+    if [ -d /etc/cloud ]; then
+        touch /etc/cloud/cloud-init.disabled
+        systemctl disable cloud-init 2>/dev/null
+        systemctl disable cloud-init-local 2>/dev/null
+        systemctl disable cloud-config 2>/dev/null
+        systemctl disable cloud-final 2>/dev/null
+    fi
+    sed -i 's/GRUB_TIMEOUT=.[0-9]*/GRUB_TIMEOUT=1/' /etc/default/grub
+    update-grub
 
-# 2. Make it executable
-chmod +x /usr/local/bin/ovs-switch2-startup.sh
+    echo "=== Step 3: Setting up OVS Bridge ==="
+    ovs-vsctl add-br $BRIDGE
+    for port in $PORTS; do
+        echo "Adding port: $port"
+        ip addr flush dev $port 2>/dev/null
+        ip link set dev $port up
+        ovs-vsctl add-port $BRIDGE $port 2>/dev/null
+    done
+    ip link set dev $BRIDGE up
 
-# 3. Create the systemd configuration file
-cat << 'INNER' > /etc/systemd/system/ovs-switch2-persistent.service
-[Unit]
-Description=Persistent Switch 2 Layer 2 Configuration
-After=openvswitch-switch.service network-online.target
-Wants=openvswitch-switch.service
+    # Register with systemd only on first run
+    if [ ! -f /etc/systemd/system/station2-switch.service ]; then
+        echo "=== Registering Systemd Service ==="
+        printf '[Unit]\nDescription=Station-2-Switch Layer 2 Bridging Daemon\nAfter=openvswitch-switch.service network-online.target\nWants=openvswitch-switch.service\n\n[Service]\nType=oneshot\nExecStart=/home/student/setup_station2_switch.sh\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/station2-switch.service
+        systemctl daemon-reload
+        systemctl enable station2-switch.service
+        echo "Service registered."
+    fi
 
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/ovs-switch2-startup.sh
-RemainAfterExit=yes
+    echo "====================================================================="
+    echo "SUCCESS: Station-2-Switch deployed!"
+    echo "  Hostname:   Station-2-Switch"
+    echo "  Boot delay: Fixed"
+    echo "  Bridge:     br-station2 (ens3-ens11, no IP)"
+    echo "  e0(ens3):   → OT-Core"
+    echo "  e1(ens4):   → PLC-2"
+    echo "  e2(ens5):   → HMI-2"
+    echo ""
+    echo "Useful commands:"
+    echo "  Check bridge:  ovs-vsctl show"
+    echo "  Reset:         systemctl restart station2-switch.service"
+    echo "====================================================================="
+}
 
-[Install]
-WantedBy=multi-user.target
-INNER
-
-# 4. Enable and start the service
-systemctl daemon-reload
-systemctl enable ovs-switch2-persistent.service
-systemctl restart ovs-switch2-persistent.service
-
-echo "=== SUCCESS: Switch 2 configuration is now dynamically persistent! ==="
+case "$1" in
+    reset)  reset ;;
+    *)      setup ;;
+esac
