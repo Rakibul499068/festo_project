@@ -9,6 +9,7 @@ BRIDGE_PREFIX="br-vlan"
 UPLINK="ens3"
 UPLINK_IP="172.16.0.2/24"
 GATEWAY="172.16.0.1"
+DNS="8.8.8.8"
 
 declare -A VLAN_PORT=( [10]="ens4" [20]="ens5" [30]="ens6" [40]="ens7" [50]="ens8" [60]="ens9" )
 declare -A VLAN_GW=( [10]="172.16.10.1" [20]="172.16.20.1" [30]="172.16.30.1" [40]="172.16.40.1" [50]="172.16.50.1" [60]="172.16.60.1" )
@@ -54,11 +55,16 @@ setup() {
     echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-ot-switch.conf
 
     echo "=== Step 4: Setup Uplink ==="
+    ip addr flush dev $UPLINK 2>/dev/null
     ip link set dev $UPLINK up
     ip addr add $UPLINK_IP dev $UPLINK
+    ip route del default 2>/dev/null
     ip route add default via $GATEWAY
 
-    echo "=== Step 5: Setup VLAN Bridges ==="
+    echo "=== Step 5: Setup DNS ==="
+    echo "nameserver $DNS" > /etc/resolv.conf
+
+    echo "=== Step 6: Setup VLAN Bridges ==="
     for vlan in 10 20 30 40 50 60; do
         port=${VLAN_PORT[$vlan]}
         gw=${VLAN_GW[$vlan]}
@@ -72,12 +78,12 @@ setup() {
         ip addr add $gw/24 dev $bridge
     done
 
-    echo "=== Step 6: NAT Masquerade for All Stations ==="
+    echo "=== Step 7: NAT Masquerade for All Stations ==="
     iptables -t nat -A POSTROUTING -o $UPLINK -j MASQUERADE
 
     # Register with systemd only on first run
     if [ ! -f /etc/systemd/system/ot-switch.service ]; then
-        echo "=== Step 7: Registering Systemd Service ==="
+        echo "=== Step 8: Registering Systemd Service ==="
         printf '[Unit]\nDescription=OT-Core Switch\nAfter=openvswitch-switch.service network-online.target\nWants=openvswitch-switch.service\n\n[Service]\nType=oneshot\nExecStart=/home/student/setup_ot_switch.sh\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/ot-switch.service
         systemctl daemon-reload
         systemctl enable ot-switch.service
@@ -89,6 +95,7 @@ setup() {
     echo "  Hostname:   OT-Switch"
     echo "  Boot delay: Fixed"
     echo "  Uplink:     ens3 → 172.16.0.2/24 (FW-OT)"
+    echo "  DNS:        8.8.8.8"
     echo "  VLAN10:     ens4 → 172.16.10.1/24 (Station-1)"
     echo "  VLAN20:     ens5 → 172.16.20.1/24 (Station-2)"
     echo "  VLAN30:     ens6 → 172.16.30.1/24 (Station-3)"
