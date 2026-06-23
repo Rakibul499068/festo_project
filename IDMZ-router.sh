@@ -1,8 +1,9 @@
+
 #!/bin/bash
 # =====================================================================
 # IDMZ-ROUTER DEPLOYMENT SCRIPT
 # WAN1(ens3) → FW-IT  (192.168.10.0/24)
-# WAN2(ens4) → FW-OT  (172.16.0.0/24)
+# WAN2(ens4) → FW-OT  (192.168.50.0/24)
 # LAN(ens5)  → IDMZ-Switch (192.168.20.0/24)
 # Usage: sudo ./setup_idmz_router.sh
 # =====================================================================
@@ -11,10 +12,10 @@ WAN1="ens3"
 WAN2="ens4"
 LAN="ens5"
 WAN1_IP="192.168.10.2/24"
-WAN2_IP="172.16.0.3/24"
+WAN2_IP="192.168.50.2/24"
 LAN_IP="192.168.20.1/24"
 WAN1_GW="192.168.10.1"
-WAN2_GW="172.16.0.1"
+WAN2_GW="192.168.50.1"
 DNS="8.8.8.8"
 
 reset() {
@@ -68,6 +69,9 @@ setup() {
     # Default route via FW-IT
     ip route add default via $WAN1_GW
 
+    # IT subnet via FW-IT
+    ip route add 10.10.1.0/24 via $WAN1_GW
+
     # OT subnets via FW-OT
     ip route add 172.16.0.0/24 via $WAN2_GW
     ip route add 172.16.10.0/24 via $WAN2_GW
@@ -77,9 +81,6 @@ setup() {
     ip route add 172.16.50.0/24 via $WAN2_GW
     ip route add 172.16.60.0/24 via $WAN2_GW
 
-    # IT subnet via FW-IT
-    ip route add 10.10.1.0/24 via $WAN1_GW
-
     echo "=== Step 6: Setup DNS ==="
     echo "nameserver $DNS" > /etc/resolv.conf
 
@@ -88,19 +89,19 @@ setup() {
     iptables -t nat -A POSTROUTING -o $WAN2 -j MASQUERADE
 
     echo "=== Step 8: Firewall Rules ==="
-    # Allow established connections
+    iptables -P FORWARD DROP
     iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
-    # Allow IDMZ → IT
+    # IDMZ → IT
     iptables -A FORWARD -i $LAN -o $WAN1 -j ACCEPT
-    # Allow IDMZ → OT
+    # IDMZ → OT
     iptables -A FORWARD -i $LAN -o $WAN2 -j ACCEPT
-    # Allow IT → IDMZ
+    # IT → IDMZ
     iptables -A FORWARD -i $WAN1 -o $LAN -j ACCEPT
-    # Allow OT → IDMZ
+    # OT → IDMZ
     iptables -A FORWARD -i $WAN2 -o $LAN -j ACCEPT
-    # Block IT → OT directly
+    # Block IT → OT
     iptables -A FORWARD -i $WAN1 -o $WAN2 -j DROP
-    # Block OT → IT directly
+    # Block OT → IT
     iptables -A FORWARD -i $WAN2 -o $WAN1 -j DROP
 
     if [ ! -f /etc/systemd/system/idmz-router.service ]; then
@@ -108,7 +109,6 @@ setup() {
         printf '[Unit]\nDescription=IDMZ-Router Service\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nExecStart=/home/student/setup_idmz_router.sh\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/idmz-router.service
         systemctl daemon-reload
         systemctl enable idmz-router.service
-        echo "Service registered."
     fi
 
     echo "====================================================================="
@@ -116,15 +116,8 @@ setup() {
     echo "  Hostname:   IDMZ-Router"
     echo "  Boot delay: Fixed"
     echo "  WAN1:       ens3 → 192.168.10.2/24 (FW-IT)"
-    echo "  WAN2:       ens4 → 172.16.0.3/24 (FW-OT)"
+    echo "  WAN2:       ens4 → 192.168.50.2/24 (FW-OT)"
     echo "  LAN:        ens5 → 192.168.20.1/24 (IDMZ-Switch)"
-    echo "  Firewall:   IT↔OT blocked, IDMZ↔IT allowed, IDMZ↔OT allowed"
-    echo ""
-    echo "Useful commands:"
-    echo "  Check routes:    ip route show"
-    echo "  Check firewall:  iptables -L"
-    echo "  Check NAT:       iptables -t nat -L"
-    echo "  Reset:           systemctl restart idmz-router.service"
     echo "====================================================================="
 }
 
